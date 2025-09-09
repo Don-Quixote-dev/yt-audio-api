@@ -1,22 +1,21 @@
 FROM php:8.2-apache
 
-# Instala Python, pip, ffmpeg e wget
+# Instala dependências básicas
 RUN apt-get update && apt-get install -y \
-    python3 \
-    python3-pip \
+    curl \
     ffmpeg \
-    wget \
+    ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
-# Instala yt-dlp de forma segura
-RUN python3 -m pip install --no-cache-dir --upgrade yt-dlp
+# Baixa o yt-dlp binário oficial
+RUN curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp \
+    -o /usr/local/bin/yt-dlp \
+ && chmod a+rx /usr/local/bin/yt-dlp
 
-# Copia os arquivos para o Apache
+# Copia os arquivos da aplicação
 COPY . /var/www/html/
 RUN chown -R www-data:www-data /var/www/html
 
-# Expõe a porta padrão do Render
 EXPOSE 10000
 
-# Inicia Apache
 CMD ["apache2-foreground"]
