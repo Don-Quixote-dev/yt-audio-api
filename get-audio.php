@@ -56,7 +56,7 @@ $parts = [
   '--sleep-requests', '1',
   '--retries', '1',
   '--user-agent', escapeshellarg($ua),
-  '--extractor-args', escapeshellarg("youtube:player_client={$clients};lang=pt-BR"),
+  '--extractor-args', escapeshellarg("youtube:player_client={$clients}"),
   '--get-url',
   escapeshellarg($url),
 ];
