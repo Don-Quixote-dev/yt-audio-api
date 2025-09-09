@@ -1,16 +1,17 @@
 <?php
 header('Content-Type: application/json; charset=utf-8');
 
-// Versão do PHP
-$phpVersion = PHP_VERSION;
+function run($cmd) {
+  $out=[]; $code=0; exec($cmd.' 2>&1', $out, $code);
+  return [$code, implode("\n",$out)];
+}
 
-// Testa se yt-dlp está disponível
-$ytOutput = [];
-$exitCode = 0;
-exec('yt-dlp --version 2>&1', $ytOutput, $exitCode);
+[$c1,$o1] = run('/usr/local/bin/yt-dlp --version');
+[$c2,$o2] = run('which yt-dlp');
 
 echo json_encode([
-    'php' => $phpVersion,
-    'yt_dlp' => $ytOutput[0] ?? 'não encontrado',
-    'exit_code' => $exitCode,
-], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+  'php'     => PHP_VERSION,
+  'yt_dlp'  => $c1===0 ? trim($o1) : 'não encontrado',
+  'which'   => trim($o2),
+  'exit'    => $c1
+], JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES);
