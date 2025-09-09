@@ -9,8 +9,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && update-ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
-# Baixa yt-dlp binário oficial
-RUN curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp \
+# Baixa yt-dlp (NIGHTLY para acompanhar mudanças do YouTube)
+RUN curl -L https://github.com/yt-dlp/yt-dlp/releases/download/nightly/yt-dlp \
     -o /usr/local/bin/yt-dlp \
  && chmod a+rx /usr/local/bin/yt-dlp
 
