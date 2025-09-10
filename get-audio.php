@@ -8,7 +8,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') exit(0);
 $url = trim($_GET['url'] ?? '');
 if ($url === '' || !preg_match('~^https?://(www\.)?(youtube\.com|youtu\.be)/~i', $url)) {
   http_response_code(400);
-  echo json_encode(['error' => 'Informe uma URL válida do YouTube/youtu.be em ?url=']);
+  echo json_encode(['error' => 'Informe uma URL válida do YouTube/youtu.be em ?url='], JSON_PRETTY_PRINT);
   exit;
 }
 
@@ -16,7 +16,6 @@ $yt    = '/usr/local/bin/yt-dlp';
 $ua    = getenv('YTDLP_UA') ?: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
 $proxy = getenv('YTDLP_PROXY') ?: '';
 $cookieB64 = getenv('YTDLP_COOKIES') ?: '';
-
 $envPrefix = 'HOME=/tmp XDG_CACHE_HOME=/tmp';
 
 // cookies
@@ -26,23 +25,41 @@ if ($cookieB64) {
   file_put_contents($cookiesFile, base64_decode($cookieB64));
   if (!filesize($cookiesFile)) $cookiesFile = '';
 }
+$cookiesOption = $cookiesFile ? "--cookies " . escapeshellarg($cookiesFile) : "";
 
-// cache (10 min)
-$vid = null;
-if (preg_match('~v=([A-Za-z0-9_-]{6,})~', $url, $m)) $vid = $m[1];
-if (!$vid && preg_match('~youtu\.be/([A-Za-z0-9_-]{6,})~', $url, $m)) $vid = $m[1];
+// 1) Obter informações do vídeo
+$cmdInfo = "$envPrefix $yt --quiet --no-warnings $cookiesOption --user-agent " . escapeshellarg($ua) . " --dump-json " . escapeshellarg($url);
+exec($cmdInfo . " 2>&1", $outInfo, $codeInfo);
 
-$cacheTtl = 600;
-$cacheFile = $vid ? "/tmp/ytcache_{$vid}.json" : '';
-if ($cacheFile && is_file($cacheFile) && (time() - filemtime($cacheFile) < $cacheTtl)) {
-  $cached = json_decode(file_get_contents($cacheFile), true);
-  if (!empty($cached['audio_url'])) {
-    echo json_encode($cached);
+if ($codeInfo !== 0 || empty($outInfo)) {
+    http_response_code(500);
+    echo json_encode(['error' => 'Não foi possível obter informações do vídeo', 'debug' => $outInfo], JSON_PRETTY_PRINT);
     exit;
-  }
 }
 
-// monta comando
+$videoInfo = json_decode(implode("\n", $outInfo), true);
+$duration  = $videoInfo['duration'] ?? 0;
+$title     = $videoInfo['title'] ?? 'Sem título';
+
+// 2) Bloquear vídeos restritos
+if (!empty($videoInfo['age_limit']) && $videoInfo['age_limit'] > 0) {
+    http_response_code(403);
+    echo json_encode(['error' => 'Este vídeo é restrito por idade ou requer login.'], JSON_PRETTY_PRINT);
+    exit;
+}
+
+// 3) Limitar duração (10 min)
+$limiteSegundos = 600;
+if ($duration > $limiteSegundos) {
+    http_response_code(400);
+    echo json_encode([
+        'error'   => 'Vídeo muito longo. Limite: 10 minutos.',
+        'duracao' => gmdate("i:s", $duration)
+    ], JSON_PRETTY_PRINT);
+    exit;
+}
+
+// 4) Extrair URL de áudio
 $clients = 'android,web,ios,web_creator,tv,web_embedded';
 $parts = [
   $envPrefix,
@@ -65,51 +82,43 @@ if ($proxy)       { $parts[]='--proxy';   $parts[]=escapeshellarg($proxy); }
 
 $cmd = implode(' ', $parts) . ' 2>&1';
 
-// executa
-$desc = [1 => ['pipe','w']];
-$proc = proc_open($cmd, $desc, $pipes);
+$desc=[1=>['pipe','w']];
+$proc=proc_open($cmd,$desc,$pipes);
 if (!is_resource($proc)) {
-  http_response_code(500);
-  echo json_encode(['error'=>'Falha ao iniciar extrator']); exit;
+    http_response_code(500);
+    echo json_encode(['error'=>'Falha ao iniciar extrator'], JSON_PRETTY_PRINT);
+    exit;
 }
-stream_set_blocking($pipes[1], true);
 
+stream_set_blocking($pipes[1], true);
 $timeout = 60;
 $start = microtime(true);
 $audioUrl = '';
-$lastLine = '';
 
 while ((microtime(true) - $start) < $timeout && ($line = fgets($pipes[1])) !== false) {
-  $lastLine = trim($line);
-  if (filter_var($lastLine, FILTER_VALIDATE_URL)) {
-    $audioUrl = $lastLine;
-    proc_terminate($proc);
-    break;
-  }
-  usleep(100000);
+    $line = trim($line);
+    if (filter_var($line, FILTER_VALIDATE_URL)) {
+        $audioUrl = $line;
+        proc_terminate($proc);
+        break;
+    }
 }
-
 fclose($pipes[1]);
 $code = proc_close($proc);
 
 if (!$audioUrl) {
-  http_response_code($code === 'timeout' ? 504 : 502);
-  echo json_encode([
-    'error' => $code === 'timeout' ? 'Timeout ao extrair áudio' : 'Não foi possível extrair o áudio',
-    'exit_code' => $code,
-    'last_output' => $lastLine,
-    'cmd' => $cmd
-  ]);
-  exit;
+    http_response_code(502);
+    echo json_encode([
+      'error' => 'Não foi possível extrair o áudio',
+      'exit_code' => $code
+    ], JSON_PRETTY_PRINT);
+    exit;
 }
 
-// sucesso
+// 5) Retorno final
 $response = [
-  'video_url'   => $url,
-  'audio_url'   => $audioUrl,
-  'expires_hint'=> 'URL temporária; use em poucas horas.'
+  'title'    => $title,
+  'duration' => gmdate("i:s", $duration), // minutos:segundos
+  'audio'    => $audioUrl
 ];
-
-if ($cacheFile) @file_put_contents($cacheFile, json_encode($response));
-
 echo json_encode($response, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
