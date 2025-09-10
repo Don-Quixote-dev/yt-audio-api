@@ -109,6 +109,7 @@ $response = [
   'audio_url'   => $audioUrl,
   'expires_hint'=> 'URL temporária; use em poucas horas.'
 ];
+
 if ($cacheFile) @file_put_contents($cacheFile, json_encode($response));
 
-echo json_encode($response);
+echo json_encode($response, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
