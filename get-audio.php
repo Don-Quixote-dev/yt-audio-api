@@ -3,7 +3,7 @@ header('Content-Type: application/json; charset=utf-8');
 header('Access-Control-Allow-Origin: *');
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') exit(0);
 
-@set_time_limit(60);
+@set_time_limit(90);
 
 $url = trim($_GET['url'] ?? '');
 if ($url === '' || !preg_match('~^https?://(www\.)?(youtube\.com|youtu\.be)/~i', $url)) {
@@ -12,14 +12,14 @@ if ($url === '' || !preg_match('~^https?://(www\.)?(youtube\.com|youtu\.be)/~i',
   exit;
 }
 
-$yt = '/usr/local/bin/yt-dlp';
-$ua = getenv('YTDLP_UA') ?: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
+$yt    = '/usr/local/bin/yt-dlp';
+$ua    = getenv('YTDLP_UA') ?: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
 $proxy = getenv('YTDLP_PROXY') ?: '';
 $cookieB64 = getenv('YTDLP_COOKIES') ?: '';
 
 $envPrefix = 'HOME=/tmp XDG_CACHE_HOME=/tmp';
 
-// Salva cookies se existir env
+// cookies
 $cookiesFile = '';
 if ($cookieB64) {
   $cookiesFile = '/tmp/cookies.txt';
@@ -27,12 +27,12 @@ if ($cookieB64) {
   if (!filesize($cookiesFile)) $cookiesFile = '';
 }
 
-// Cache simples por 10 minutos
+// cache (10 min)
 $vid = null;
 if (preg_match('~v=([A-Za-z0-9_-]{6,})~', $url, $m)) $vid = $m[1];
 if (!$vid && preg_match('~youtu\.be/([A-Za-z0-9_-]{6,})~', $url, $m)) $vid = $m[1];
 
-$cacheTtl = 600; // 10 min
+$cacheTtl = 600;
 $cacheFile = $vid ? "/tmp/ytcache_{$vid}.json" : '';
 if ($cacheFile && is_file($cacheFile) && (time() - filemtime($cacheFile) < $cacheTtl)) {
   $cached = json_decode(file_get_contents($cacheFile), true);
@@ -42,19 +42,19 @@ if ($cacheFile && is_file($cacheFile) && (time() - filemtime($cacheFile) < $cach
   }
 }
 
-// Monta um comando único com múltiplos clients
+// monta comando
 $clients = 'android,web,ios,web_creator,tv,web_embedded';
 $parts = [
   $envPrefix,
   escapeshellcmd($yt),
+  '--quiet',
   '-f', 'bestaudio',
   '--no-playlist',
   '--force-ipv4',
   '--no-cache',
-  '--no-warnings',
-  '--socket-timeout', '20',
-  '--sleep-requests', '2',
-  '--retries', '2',
+  '--socket-timeout','20',
+  '--sleep-requests','2',
+  '--retries','2',
   '--user-agent', escapeshellarg($ua),
   '--extractor-args', escapeshellarg("youtube:player_client={$clients}"),
   '--get-url',
@@ -65,62 +65,50 @@ if ($proxy)       { $parts[]='--proxy';   $parts[]=escapeshellarg($proxy); }
 
 $cmd = implode(' ', $parts) . ' 2>&1';
 
-// Executa com timeout total de ~40s
-$desc=[1=>['pipe','w']];
-$proc=proc_open($cmd,$desc,$pipes);
-if(!is_resource($proc)){
+// executa
+$desc = [1 => ['pipe','w']];
+$proc = proc_open($cmd, $desc, $pipes);
+if (!is_resource($proc)) {
   http_response_code(500);
   echo json_encode(['error'=>'Falha ao iniciar extrator']); exit;
 }
-stream_set_blocking($pipes[1], false);
-$start=microtime(true); $buf='';
-$timeout=40;
+stream_set_blocking($pipes[1], true);
 
-while(true){
-  $buf .= stream_get_contents($pipes[1]);
-  $st = proc_get_status($proc);
-  if(!$st['running']){ fclose($pipes[1]); $code=proc_close($proc); break; }
-  if((microtime(true)-$start)>$timeout){
-    proc_terminate($proc); fclose($pipes[1]); proc_close($proc);
-    http_response_code(504);
-    echo json_encode(['error'=>'Timeout ao extrair áudio']); exit;
+$timeout = 60;
+$start = microtime(true);
+$audioUrl = '';
+$lastLine = '';
+
+while ((microtime(true) - $start) < $timeout && ($line = fgets($pipes[1])) !== false) {
+  $lastLine = trim($line);
+  if (filter_var($lastLine, FILTER_VALIDATE_URL)) {
+    $audioUrl = $lastLine;
+    proc_terminate($proc);
+    break;
   }
-  usleep(150000);
+  usleep(100000);
 }
 
-$out = trim($buf);
-if ($code!==0 || $out==='' || stripos($out,'ERROR:')!==false) {
-  http_response_code(502);
+fclose($pipes[1]);
+$code = proc_close($proc);
+
+if (!$audioUrl) {
+  http_response_code($code === 'timeout' ? 504 : 502);
   echo json_encode([
-    'error'=>'Não foi possível extrair o áudio',
-    'exit_code'=>$code,
-    'details'=>$out,
-    'cmd'=>$cmd,
+    'error' => $code === 'timeout' ? 'Timeout ao extrair áudio' : 'Não foi possível extrair o áudio',
+    'exit_code' => $code,
+    'last_output' => $lastLine,
+    'cmd' => $cmd
   ]);
   exit;
 }
 
-// Pega a primeira linha que seja URL
-$lines = preg_split('~\r?\n~', $out);
-$audioUrl='';
-foreach ($lines as $ln) {
-  $ln = trim($ln);
-  if (filter_var($ln, FILTER_VALIDATE_URL)) { $audioUrl = $ln; break; }
-}
-
-if (!$audioUrl) {
-  http_response_code(502);
-  echo json_encode(['error'=>'Saída inesperada do extrator','details'=>$out]);
-  exit;
-}
-
+// sucesso
 $response = [
-  'video_url' => $url,
-  'audio_url' => $audioUrl,
-  'expires_hint' => 'URL temporária; use em poucas horas.'
+  'video_url'   => $url,
+  'audio_url'   => $audioUrl,
+  'expires_hint'=> 'URL temporária; use em poucas horas.'
 ];
-
-// grava cache
 if ($cacheFile) @file_put_contents($cacheFile, json_encode($response));
 
 echo json_encode($response);
